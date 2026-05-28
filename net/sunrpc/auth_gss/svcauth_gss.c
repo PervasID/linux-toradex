@@ -1703,6 +1703,8 @@ svcauth_gss_release(struct svc_rqst *rqstp)
 
 	if (!gsd)
 		goto out;
+	if (!gsd->rsci)
+		goto out;
 	gc = &gsd->clcred;
 	if (gc->gc_proc != RPC_GSS_PROC_DATA)
 		goto out;
