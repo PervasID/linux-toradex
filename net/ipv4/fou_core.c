@@ -543,8 +543,11 @@ static int fou_create(struct net *net, struct fou_cfg *cfg,
 	}
 
 	err = fou_add_to_port_list(net, fou);
-	if (err)
+	if (err) {
+		if (cfg->udp_config.family == AF_INET)
+			udp_del_offload(&fou->udp_offloads);
 		goto error;
+	}
 
 	if (sockp)
 		*sockp = sock;
@@ -552,9 +555,10 @@ static int fou_create(struct net *net, struct fou_cfg *cfg,
 	return 0;
 
 error:
-	kfree(fou);
 	if (sock)
 		udp_tunnel_sock_release(sock);
+	if (fou)
+		kfree_rcu(fou, rcu);
 
 	return err;
 }
