@@ -3354,7 +3354,7 @@ qla24xx_report_id_acquisition(scsi_qla_host_t *vha,
 	struct qla_hw_data *ha = vha->hw;
 	scsi_qla_host_t *vp;
 	unsigned long   flags;
-	int found;
+	int found = 0;
 
 	ql_dbg(ql_dbg_mbx + ql_dbg_verbose, vha, 0x10b6,
 	    "Entered %s.\n", __func__);
@@ -3411,6 +3411,7 @@ qla24xx_report_id_acquisition(scsi_qla_host_t *vha,
 		list_for_each_entry(vp, &ha->vp_list, list) {
 			if (vp_idx == vp->vp_idx) {
 				found = 1;
+				atomic_inc(&vp->vref_count);
 				break;
 			}
 		}
@@ -3432,6 +3433,8 @@ qla24xx_report_id_acquisition(scsi_qla_host_t *vha,
 reg_needed:
 		set_bit(REGISTER_FC4_NEEDED, &vp->dpc_flags);
 		set_bit(REGISTER_FDMI_NEEDED, &vp->dpc_flags);
+		if (found)
+			atomic_dec(&vp->vref_count);
 		set_bit(VP_DPC_NEEDED, &vha->dpc_flags);
 		qla2xxx_wake_dpc(vha);
 	}
