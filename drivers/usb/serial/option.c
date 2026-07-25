@@ -2575,23 +2575,33 @@ static void option_instat_callback(struct urb *urb)
 			dev_dbg(dev, "%s: NULL req_pkt\n", __func__);
 			return;
 		}
-		if ((req_pkt->bRequestType == 0xA1) &&
+
+		if (urb->actual_length < sizeof(*req_pkt)) {
+			dev_err(dev, "%s: short packet: %u bytes\n", __func__,
+				urb->actual_length);
+		} else if ((req_pkt->bRequestType == 0xA1) &&
 				(req_pkt->bRequest == 0x20)) {
+			unsigned char signals;
 			int old_dcd_state;
-			unsigned char signals = *((unsigned char *)
-					urb->transfer_buffer +
-					sizeof(struct usb_ctrlrequest));
 
-			dev_dbg(dev, "%s: signal x%x\n", __func__, signals);
+			if (urb->actual_length < sizeof(*req_pkt) + 1) {
+				dev_err(dev, "%s: short interrupt transfer: %u bytes\n",
+					__func__, urb->actual_length);
+			} else {
+				signals = *((unsigned char *)urb->transfer_buffer +
+						sizeof(*req_pkt));
 
-			old_dcd_state = portdata->dcd_state;
-			portdata->cts_state = 1;
-			portdata->dcd_state = ((signals & 0x01) ? 1 : 0);
-			portdata->dsr_state = ((signals & 0x02) ? 1 : 0);
-			portdata->ri_state = ((signals & 0x08) ? 1 : 0);
+				dev_dbg(dev, "%s: signal x%x\n", __func__, signals);
 
-			if (old_dcd_state && !portdata->dcd_state)
-				tty_port_tty_hangup(&port->port, true);
+				old_dcd_state = portdata->dcd_state;
+				portdata->cts_state = 1;
+				portdata->dcd_state = ((signals & 0x01) ? 1 : 0);
+				portdata->dsr_state = ((signals & 0x02) ? 1 : 0);
+				portdata->ri_state = ((signals & 0x08) ? 1 : 0);
+
+				if (old_dcd_state && !portdata->dcd_state)
+					tty_port_tty_hangup(&port->port, true);
+			}
 		} else {
 			dev_dbg(dev, "%s: type %x req %x\n", __func__,
 				req_pkt->bRequestType, req_pkt->bRequest);
