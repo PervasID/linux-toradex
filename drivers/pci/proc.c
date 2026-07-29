@@ -43,6 +43,9 @@ static ssize_t proc_bus_pci_read(struct file *file, char __user *buf,
 	else
 		size = 64;
 
+	if (!nbytes)
+		return 0;
+
 	if (pos >= size)
 		return 0;
 	if (nbytes >= size)
@@ -115,6 +118,9 @@ static ssize_t proc_bus_pci_write(struct file *file, const char __user *buf,
 	int pos = *ppos;
 	int size = dev->cfg_size;
 	int cnt;
+
+	if (!nbytes)
+		return 0;
 
 	if (pos >= size)
 		return 0;
