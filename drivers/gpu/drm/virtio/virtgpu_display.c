@@ -487,7 +487,7 @@ virtio_gpu_user_framebuffer_create(struct drm_device *dev,
 		kfree(virtio_gpu_fb);
 		if (obj)
 			drm_gem_object_unreference_unlocked(obj);
-		return NULL;
+		return ERR_PTR(ret);
 	}
 
 	return &virtio_gpu_fb->base;
