@@ -304,6 +304,7 @@ int sctp_backlog_rcv(struct sock *sk, struct sk_buff *skb)
 {
 	struct sctp_chunk *chunk = SCTP_INPUT_CB(skb)->chunk;
 	struct sctp_inq *inqueue = &chunk->rcvr->inqueue;
+	struct sctp_transport *t = chunk->transport;
 	struct sctp_ep_common *rcvr = NULL;
 	int backloged = 0;
 
@@ -352,9 +353,10 @@ int sctp_backlog_rcv(struct sock *sk, struct sk_buff *skb)
 
 done:
 	/* Release the refs we took in sctp_add_backlog */
-	if (SCTP_EP_TYPE_ASSOCIATION == rcvr->type)
+	if (SCTP_EP_TYPE_ASSOCIATION == rcvr->type) {
 		sctp_association_put(sctp_assoc(rcvr));
-	else if (SCTP_EP_TYPE_SOCKET == rcvr->type)
+		sctp_transport_put(t);
+	} else if (SCTP_EP_TYPE_SOCKET == rcvr->type)
 		sctp_endpoint_put(sctp_ep(rcvr));
 	else
 		BUG();
@@ -374,9 +376,10 @@ static int sctp_add_backlog(struct sock *sk, struct sk_buff *skb)
 		 * This way, we know structures we need will not disappear
 		 * from us
 		 */
-		if (SCTP_EP_TYPE_ASSOCIATION == rcvr->type)
+		if (SCTP_EP_TYPE_ASSOCIATION == rcvr->type) {
 			sctp_association_hold(sctp_assoc(rcvr));
-		else if (SCTP_EP_TYPE_SOCKET == rcvr->type)
+			sctp_transport_hold(chunk->transport);
+		} else if (SCTP_EP_TYPE_SOCKET == rcvr->type)
 			sctp_endpoint_hold(sctp_ep(rcvr));
 		else
 			BUG();
