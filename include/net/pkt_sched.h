@@ -6,6 +6,8 @@
 #include <linux/if_vlan.h>
 #include <net/sch_generic.h>
 
+#define QDISC_PKT_LEN_MAX	(1 << 20)	/* 1 MiB */
+
 struct qdisc_walker {
 	int	stop;
 	int	skip;
