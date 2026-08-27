@@ -180,6 +180,14 @@ static int ip6_frag_queue(struct frag_queue *fq, struct sk_buff *skb,
 	if (fq->q.flags & INET_FRAG_COMPLETE)
 		goto err;
 
+	/* An IPv6 fragment is never a GSO packet, but an untrusted source
+	 * (virtio_net_hdr from tun, PACKET_VNET_HDR) may have attached GSO
+	 * metadata to it.  Do not let that reach the reassembled skb, whose
+	 * head keeps the first fragment's shinfo and whose frag_list is not
+	 * GRO-shaped, which would crash skb_segment().
+	 */
+	skb_gso_reset(skb);
+
 	offset = ntohs(fhdr->frag_off) & ~0x7;
 	end = offset + (ntohs(ipv6_hdr(skb)->payload_len) -
 			((u8 *)(fhdr + 1) - (u8 *)(ipv6_hdr(skb) + 1)));

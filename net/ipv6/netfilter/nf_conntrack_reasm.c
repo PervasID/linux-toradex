@@ -202,6 +202,14 @@ static int nf_ct_frag6_queue(struct frag_queue *fq, struct sk_buff *skb,
 		goto err;
 	}
 
+	/* An IPv6 fragment is never a GSO packet, but an untrusted source
+	 * (virtio_net_hdr from tun, PACKET_VNET_HDR) may have attached GSO
+	 * metadata to it.  Do not let that reach the reassembled skb, whose
+	 * head keeps the first fragment's shinfo and whose frag_list is not
+	 * GRO-shaped, which would crash skb_segment().
+	 */
+	skb_gso_reset(skb);
+
 	payload_len = ntohs(ipv6_hdr(skb)->payload_len);
 
 	offset = ntohs(fhdr->frag_off) & ~0x7;
