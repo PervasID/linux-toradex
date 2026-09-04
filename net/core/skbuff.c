@@ -727,10 +727,14 @@ EXPORT_SYMBOL(kfree_skb_list);
  *
  *	Report xmit error if a device callback is tracking this skb.
  *	skb must be freed afterwards.
+ *
+ *	Does nothing for a cloned skb: the zerocopy state lives in
+ *	skb_shinfo(), which the clones share.
  */
 void skb_tx_error(struct sk_buff *skb)
 {
-	if (skb_shinfo(skb)->tx_flags & SKBTX_DEV_ZEROCOPY) {
+	if (skb && !skb_cloned(skb) &&
+	    (skb_shinfo(skb)->tx_flags & SKBTX_DEV_ZEROCOPY)) {
 		struct ubuf_info *uarg;
 
 		uarg = skb_shinfo(skb)->destructor_arg;
