@@ -299,6 +299,39 @@ static inline void eth_hw_addr_inherit(struct net_device *dst,
 }
 
 /**
+ * ether_addr_to_u64 - Convert an Ethernet address into a u64 value.
+ * @addr: Pointer to a six-byte array containing the Ethernet address
+ *
+ * Return a u64 value of the address
+ */
+static inline u64 ether_addr_to_u64(const u8 *addr)
+{
+	u64 u64 = 0;
+	int i;
+
+	for (i = 0; i < ETH_ALEN; i++) {
+		u64 <<= 8;
+		u64 |= addr[i];
+	}
+	return u64;
+}
+
+/**
+ * u64_to_ether_addr - Convert a u64 to an Ethernet address.
+ * @u64: u64 to convert to an Ethernet MAC address
+ * @addr: Pointer to a six-byte array to contain the Ethernet address
+ */
+static inline void u64_to_ether_addr(u64 u64, u8 *addr)
+{
+	int i;
+
+	for (i = ETH_ALEN - 1; i >= 0; i--) {
+		addr[i] = u64 & 0xff;
+		u64 >>= 8;
+	}
+}
+
+/**
  * ether_addr_equal - Compare two Ethernet addresses
  * @addr1: Pointer to a six-byte array containing the Ethernet address
  * @addr2: Pointer other six-byte array containing the Ethernet address
