@@ -1966,7 +1966,9 @@ exit_remove:
 	if (data->lm75[1] != NULL)
 		i2c_unregister_device(data->lm75[1]);
 free_mem:
-	kfree(data);
+	mutex_lock(&watchdog_data_mutex);
+	kref_put(&data->kref, w83793_release_resources);
+	mutex_unlock(&watchdog_data_mutex);
 exit:
 	return err;
 }
