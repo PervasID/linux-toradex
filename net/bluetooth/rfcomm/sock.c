@@ -824,6 +824,16 @@ static int rfcomm_sock_getsockopt_old(struct socket *sock, int optname, char __u
 			break;
 		}
 
+		/* d->defer_setup is never cleared, and rfcomm_recv_disc()
+		 * forces BT_CLOSED before calling __rfcomm_dlc_close(), so
+		 * the RFCOMM_DEFER_SETUP early return there is skipped and
+		 * rfcomm_dlc_unlink() has already cleared d->session.
+		 */
+		if (!rfcomm_pi(sk)->dlc->session) {
+			err = -ENOTCONN;
+			break;
+		}
+
 		l2cap_sk = rfcomm_pi(sk)->dlc->session->sock->sk;
 		conn = l2cap_pi(l2cap_sk)->chan->conn;
 
