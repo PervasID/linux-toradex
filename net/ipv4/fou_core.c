@@ -459,6 +459,9 @@ static void fou_release(struct fou *fou)
 
 static int fou_encap_init(struct sock *sk, struct fou *fou, struct fou_cfg *cfg)
 {
+	if (!cfg->protocol)
+		return -EINVAL;
+
 	udp_sk(sk)->encap_rcv = fou_udp_recv;
 	fou->protocol = cfg->protocol;
 	fou->udp_offloads.callbacks.gro_receive = fou_gro_receive;
