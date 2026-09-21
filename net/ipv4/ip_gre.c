@@ -1113,6 +1113,13 @@ static int ipgre_changelink(struct net_device *dev, struct nlattr *tb[],
 	if (!rtnl_dev_link_net_capable(dev, t->net))
 		return -EPERM;
 
+	/* ipgre_netlink_parms() below sets t->collect_md, and the changelink
+	 * path does not enforce metadata tunnel uniqueness: enabling it here
+	 * would steal/clear the shared itn->collect_md_tun of another device.
+	 */
+	if (data && data[IFLA_GRE_COLLECT_METADATA] && !t->collect_md)
+		return -EOPNOTSUPP;
+
 	if (ipgre_netlink_encap_parms(data, &ipencap)) {
 		int err = ip_tunnel_encap_setup(t, &ipencap);
 
