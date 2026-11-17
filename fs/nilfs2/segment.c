@@ -2526,6 +2526,10 @@ int nilfs_clean_segments(struct super_block *sb, struct nilfs_argv *argv,
 
 		nilfs_warning(sb, __func__,
 			      "segment construction failed. (err=%d)", err);
+
+		if (unlikely(err == -EROFS))
+			goto out_unlock;
+
 		set_current_state(TASK_INTERRUPTIBLE);
 		schedule_timeout(sci->sc_interval);
 	}

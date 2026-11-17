@@ -1585,6 +1585,7 @@ static void migrate_timer_list(struct tvec_base *new_base, struct hlist_head *he
 		/* We ignore the accounting on the dying cpu */
 		detach_timer(timer, false);
 		timer->flags = (timer->flags & ~TIMER_BASEMASK) | cpu;
+		debug_timer_activate(timer);
 		internal_add_timer(new_base, timer);
 	}
 }

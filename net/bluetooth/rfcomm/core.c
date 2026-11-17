@@ -28,6 +28,7 @@
 #include <linux/module.h>
 #include <linux/debugfs.h>
 #include <linux/kthread.h>
+#include <linux/workqueue.h>
 #include <asm/unaligned.h>
 
 #include <net/bluetooth/bluetooth.h>
@@ -43,6 +44,7 @@ static int channel_mtu = -1;
 static unsigned int l2cap_mtu = RFCOMM_MAX_L2CAP_MTU;
 
 static struct task_struct *rfcomm_thread;
+static struct workqueue_struct *rfcomm_sec_wq;
 
 static DEFINE_MUTEX(rfcomm_mutex);
 #define rfcomm_lock()	mutex_lock(&rfcomm_mutex)
@@ -1300,7 +1302,10 @@ static struct rfcomm_session *rfcomm_recv_disc(struct rfcomm_session *s,
 	return s;
 }
 
-void rfcomm_dlc_accept(struct rfcomm_dlc *d)
+/* Must be called with rfcomm_mutex held, so that the session cannot be
+ * unlinked from under us.
+ */
+static void __rfcomm_dlc_accept(struct rfcomm_dlc *d)
 {
 	struct sock *sk = d->session->sock->sk;
 	struct l2cap_conn *conn = l2cap_pi(sk)->chan->conn;
@@ -1322,6 +1327,21 @@ void rfcomm_dlc_accept(struct rfcomm_dlc *d)
 	rfcomm_send_msc(d->session, 1, d->dlci, d->v24_sig);
 }
 
+void rfcomm_dlc_accept(struct rfcomm_dlc *d)
+{
+	rfcomm_lock();
+
+	/* rfcomm_recv_disc() sets the dlc state to BT_CLOSED before calling
+	 * __rfcomm_dlc_close(), so the RFCOMM_DEFER_SETUP handshake there is
+	 * skipped and the session can already be unlinked by the time the
+	 * deferred accept runs from rfcomm_sock_recvmsg().
+	 */
+	if (d->session)
+		__rfcomm_dlc_accept(d);
+
+	rfcomm_unlock();
+}
+
 static void rfcomm_check_accept(struct rfcomm_dlc *d)
 {
 	if (rfcomm_check_security(d)) {
@@ -1334,7 +1354,7 @@ static void rfcomm_check_accept(struct rfcomm_dlc *d)
 			d->state_change(d, 0);
 			rfcomm_dlc_unlock(d);
 		} else
-			rfcomm_dlc_accept(d);
+			__rfcomm_dlc_accept(d);
 	} else {
 		set_bit(RFCOMM_AUTH_PENDING, &d->flags);
 		rfcomm_dlc_set_timer(d, RFCOMM_AUTH_TIMEOUT);
@@ -1405,6 +1425,10 @@ static int rfcomm_apply_pn(struct rfcomm_dlc *d, int cr, struct rfcomm_pn *pn)
 	d->priority = pn->priority;
 
 	d->mtu = __le16_to_cpu(pn->mtu);
+
+	/* MTU 0 causes an infinite loop when fragmenting in sendmsg */
+	if (!d->mtu)
+		d->mtu = RFCOMM_DEFAULT_MTU;
 
 	if (cr && d->mtu > s->mtu)
 		d->mtu = s->mtu;
@@ -1730,6 +1754,12 @@ static struct rfcomm_session *rfcomm_recv_frame(struct rfcomm_session *s,
 		return s;
 	}
 
+	if (skb->len < sizeof(*hdr) + 1 ||
+	    (!__test_ea(hdr->len) && skb->len < sizeof(*hdr) + 2)) {
+		kfree_skb(skb);
+		return s;
+	}
+
 	dlci = __get_dlci(hdr->addr);
 	type = __get_type(hdr->ctrl);
 
@@ -1893,7 +1923,7 @@ static void rfcomm_process_dlcs(struct rfcomm_session *s)
 					d->state_change(d, 0);
 					rfcomm_dlc_unlock(d);
 				} else
-					rfcomm_dlc_accept(d);
+					__rfcomm_dlc_accept(d);
 			}
 			continue;
 		} else if (test_and_clear_bit(RFCOMM_AUTH_REJECT, &d->flags)) {
@@ -2127,51 +2157,104 @@ static int rfcomm_run(void *unused)
 	return 0;
 }
 
-static void rfcomm_security_cfm(struct hci_conn *conn, u8 status, u8 encrypt)
+/*
+ * rfcomm_security_cfm() is called from hci_rx_work with hci_dev_lock()
+ * held (see hci_encrypt_change_evt() and hci_encrypt_cfm()).  rfcomm_mutex
+ * must not be taken there: session creation takes it in the reverse order
+ * (rfcomm_dlc_open() -> rfcomm_session_create() -> kernel_connect() ->
+ * l2cap_chan_connect() -> hci_dev_lock()), so locking the lookup and the
+ * DLC walk in place would create a lock order inversion (ABBA deadlock).
+ *
+ * Snapshot everything that is derived from the hci_conn (kept alive by the
+ * caller's hci_dev_lock()) and defer the rfcomm locked part -- the session
+ * lookup and the DLC list walk -- to a work item.  This serializes the
+ * walk against rfcomm_session_del() and rfcomm_dlc_unlink(), which free
+ * these objects under rfcomm_mutex.
+ */
+struct rfcomm_sec_cfm {
+	struct work_struct work;
+	bdaddr_t src;
+	bdaddr_t dst;
+	u8 status;
+	u8 encrypt;
+	bool secure[8];
+};
+
+static void rfcomm_security_cfm_work(struct work_struct *work)
 {
+	struct rfcomm_sec_cfm *cfm = container_of(work, struct rfcomm_sec_cfm,
+						  work);
 	struct rfcomm_session *s;
 	struct rfcomm_dlc *d;
 	struct list_head *p, *n;
+	u8 status = cfm->status;
+	u8 encrypt = cfm->encrypt;
+
+	rfcomm_lock();
+
+	s = rfcomm_session_get(&cfm->src, &cfm->dst);
+	if (s) {
+		list_for_each_safe(p, n, &s->dlcs) {
+			d = list_entry(p, struct rfcomm_dlc, list);
+
+			if (test_and_clear_bit(RFCOMM_SEC_PENDING, &d->flags)) {
+				rfcomm_dlc_clear_timer(d);
+				if (status || encrypt == 0x00) {
+					set_bit(RFCOMM_ENC_DROP, &d->flags);
+					continue;
+				}
+			}
+
+			if (d->state == BT_CONNECTED && !status &&
+			    encrypt == 0x00) {
+				if (d->sec_level == BT_SECURITY_MEDIUM) {
+					set_bit(RFCOMM_SEC_PENDING, &d->flags);
+					rfcomm_dlc_set_timer(d, RFCOMM_AUTH_TIMEOUT);
+					continue;
+				} else if (d->sec_level == BT_SECURITY_HIGH) {
+					set_bit(RFCOMM_ENC_DROP, &d->flags);
+					continue;
+				}
+			}
+
+			if (!test_and_clear_bit(RFCOMM_AUTH_PENDING, &d->flags))
+				continue;
+
+			if (!status && d->sec_level < ARRAY_SIZE(cfm->secure) &&
+			    cfm->secure[d->sec_level])
+				set_bit(RFCOMM_AUTH_ACCEPT, &d->flags);
+			else
+				set_bit(RFCOMM_AUTH_REJECT, &d->flags);
+		}
+	}
+
+	rfcomm_unlock();
+
+	rfcomm_schedule();
+
+	kfree(cfm);
+}
+
+static void rfcomm_security_cfm(struct hci_conn *conn, u8 status, u8 encrypt)
+{
+	struct rfcomm_sec_cfm *cfm;
+	int i;
 
 	BT_DBG("conn %p status 0x%02x encrypt 0x%02x", conn, status, encrypt);
 
-	s = rfcomm_session_get(&conn->hdev->bdaddr, &conn->dst);
-	if (!s)
+	cfm = kmalloc(sizeof(*cfm), GFP_ATOMIC);
+	if (!cfm)
 		return;
 
-	list_for_each_safe(p, n, &s->dlcs) {
-		d = list_entry(p, struct rfcomm_dlc, list);
+	bacpy(&cfm->src, &conn->hdev->bdaddr);
+	bacpy(&cfm->dst, &conn->dst);
+	cfm->status = status;
+	cfm->encrypt = encrypt;
+	for (i = 0; i < ARRAY_SIZE(cfm->secure); i++)
+		cfm->secure[i] = hci_conn_check_secure(conn, i);
 
-		if (test_and_clear_bit(RFCOMM_SEC_PENDING, &d->flags)) {
-			rfcomm_dlc_clear_timer(d);
-			if (status || encrypt == 0x00) {
-				set_bit(RFCOMM_ENC_DROP, &d->flags);
-				continue;
-			}
-		}
-
-		if (d->state == BT_CONNECTED && !status && encrypt == 0x00) {
-			if (d->sec_level == BT_SECURITY_MEDIUM) {
-				set_bit(RFCOMM_SEC_PENDING, &d->flags);
-				rfcomm_dlc_set_timer(d, RFCOMM_AUTH_TIMEOUT);
-				continue;
-			} else if (d->sec_level == BT_SECURITY_HIGH ||
-				   d->sec_level == BT_SECURITY_FIPS) {
-				set_bit(RFCOMM_ENC_DROP, &d->flags);
-				continue;
-			}
-		}
-
-		if (!test_and_clear_bit(RFCOMM_AUTH_PENDING, &d->flags))
-			continue;
-
-		if (!status && hci_conn_check_secure(conn, d->sec_level))
-			set_bit(RFCOMM_AUTH_ACCEPT, &d->flags);
-		else
-			set_bit(RFCOMM_AUTH_REJECT, &d->flags);
-	}
-
-	rfcomm_schedule();
+	INIT_WORK(&cfm->work, rfcomm_security_cfm_work);
+	queue_work(rfcomm_sec_wq, &cfm->work);
 }
 
 static struct hci_cb rfcomm_cb = {
@@ -2220,6 +2303,10 @@ static int __init rfcomm_init(void)
 {
 	int err;
 
+	rfcomm_sec_wq = create_singlethread_workqueue("rfcomm_security");
+	if (!rfcomm_sec_wq)
+		return -ENOMEM;
+
 	hci_register_cb(&rfcomm_cb);
 
 	rfcomm_thread = kthread_run(rfcomm_run, NULL, "krfcommd");
@@ -2255,6 +2342,7 @@ stop:
 
 unregister:
 	hci_unregister_cb(&rfcomm_cb);
+	destroy_workqueue(rfcomm_sec_wq);
 
 	return err;
 }
@@ -2266,6 +2354,11 @@ static void __exit rfcomm_exit(void)
 	hci_unregister_cb(&rfcomm_cb);
 
 	kthread_stop(rfcomm_thread);
+
+	/* The callback is unregistered above, so no new work can be
+	 * queued; destroy_workqueue() flushes the pending ones.
+	 */
+	destroy_workqueue(rfcomm_sec_wq);
 
 	rfcomm_cleanup_ttys();
 

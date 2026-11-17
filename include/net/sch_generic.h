@@ -70,6 +70,7 @@ struct Qdisc {
 	struct list_head	list;
 	u32			handle;
 	u32			parent;
+	int			depth;
 	int			(*reshape_fail)(struct sk_buff *skb,
 					struct Qdisc *q);
 

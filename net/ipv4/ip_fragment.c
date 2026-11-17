@@ -357,6 +357,14 @@ static int ip_frag_queue(struct ipq *qp, struct sk_buff *skb)
 	if (qp->q.flags & INET_FRAG_COMPLETE)
 		goto err;
 
+	/* An IP fragment is never a GSO packet, but an untrusted source
+	 * (virtio_net_hdr from tun, PACKET_VNET_HDR) may have attached GSO
+	 * metadata to it.  Do not let that reach the reassembled skb, whose
+	 * head keeps the first fragment's shinfo and whose frag_list is not
+	 * GRO-shaped, which would crash skb_segment().
+	 */
+	skb_gso_reset(skb);
+
 	if (!(IPCB(skb)->flags & IPSKB_FRAG_COMPLETE) &&
 	    unlikely(ip_frag_too_far(qp)) &&
 	    unlikely(err = ip_frag_reinit(qp))) {

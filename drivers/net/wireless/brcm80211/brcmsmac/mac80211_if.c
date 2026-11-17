@@ -1558,7 +1558,13 @@ bool brcms_del_timer(struct brcms_timer *t)
 }
 
 /*
- * precondition: perimeter lock has been acquired
+ * brcms_del_timer() uses the non-synchronous cancel_delayed_work(), so the
+ * callback (_brcms_timer) may still be running when it returns; freeing the
+ * timer structure at that point would be a use-after-free.  Since the
+ * callback acquires the perimeter lock, the synchronous cancel below must
+ * not be called with that lock held.
+ *
+ * precondition: perimeter lock is not acquired, caller must be able to sleep
  */
 void brcms_free_timer(struct brcms_timer *t)
 {
@@ -1567,6 +1573,9 @@ void brcms_free_timer(struct brcms_timer *t)
 
 	/* delete the timer in case it is active */
 	brcms_del_timer(t);
+
+	/* ensure any running callback has completed before freeing t */
+	cancel_delayed_work_sync(&t->dly_wrk);
 
 	if (wl->timers == t) {
 		wl->timers = wl->timers->next;

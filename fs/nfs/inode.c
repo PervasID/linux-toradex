@@ -1088,28 +1088,19 @@ static bool nfs_mapping_need_revalidate_inode(struct inode *inode)
 }
 
 /**
- * __nfs_revalidate_mapping - Revalidate the pagecache
- * @inode - pointer to host inode
- * @mapping - pointer to mapping
- * @may_lock - take inode->i_mutex?
+ * __nfs_clear_invalid_mapping - Conditionally clear a mapping
+ * @mapping: pointer to mapping
+ * @may_lock: take inode->i_mutex while invalidating the mapping?
+ *
+ * If the NFS_INO_INVALID_DATA inode flag is set, clear the mapping.
  */
-static int __nfs_revalidate_mapping(struct inode *inode,
-		struct address_space *mapping,
+static int __nfs_clear_invalid_mapping(struct address_space *mapping,
 		bool may_lock)
 {
+	struct inode *inode = mapping->host;
 	struct nfs_inode *nfsi = NFS_I(inode);
 	unsigned long *bitlock = &nfsi->flags;
 	int ret = 0;
-
-	/* swapfiles are not supposed to be shared. */
-	if (IS_SWAPFILE(inode))
-		goto out;
-
-	if (nfs_mapping_need_revalidate_inode(inode)) {
-		ret = __nfs_revalidate_inode(NFS_SERVER(inode), inode);
-		if (ret < 0)
-			goto out;
-	}
 
 	/*
 	 * We must clear NFS_INO_INVALID_DATA first to ensure that
@@ -1157,6 +1148,45 @@ static int __nfs_revalidate_mapping(struct inode *inode,
 	wake_up_bit(bitlock, NFS_INO_INVALIDATING);
 out:
 	return ret;
+}
+
+/**
+ * nfs_clear_invalid_mapping - Conditionally clear a mapping
+ * @mapping: pointer to mapping
+ *
+ * If the NFS_INO_INVALID_DATA inode flag is set, clear the mapping.
+ */
+int nfs_clear_invalid_mapping(struct address_space *mapping)
+{
+	/* swapfiles are not supposed to be shared. */
+	if (IS_SWAPFILE(mapping->host))
+		return 0;
+
+	return __nfs_clear_invalid_mapping(mapping, false);
+}
+
+/**
+ * __nfs_revalidate_mapping - Revalidate the pagecache
+ * @inode - pointer to host inode
+ * @mapping - pointer to mapping
+ * @may_lock - take inode->i_mutex?
+ */
+static int __nfs_revalidate_mapping(struct inode *inode,
+		struct address_space *mapping,
+		bool may_lock)
+{
+	/* swapfiles are not supposed to be shared. */
+	if (IS_SWAPFILE(inode))
+		return 0;
+
+	if (nfs_mapping_need_revalidate_inode(inode)) {
+		int ret = __nfs_revalidate_inode(NFS_SERVER(inode), inode);
+
+		if (ret < 0)
+			return ret;
+	}
+
+	return __nfs_clear_invalid_mapping(mapping, may_lock);
 }
 
 /**

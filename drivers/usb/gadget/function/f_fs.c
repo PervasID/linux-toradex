@@ -23,6 +23,7 @@
 #include <linux/export.h>
 #include <linux/hid.h>
 #include <linux/module.h>
+#include <linux/signal.h>
 #include <linux/uio.h>
 #include <asm/unaligned.h>
 
@@ -446,6 +447,7 @@ static ssize_t ffs_ep0_read(struct file *file, char __user *buf,
 	if (ffs_setup_state_clear_cancelled(ffs) == FFS_SETUP_CANCELLED)
 		return -EIDRM;
 
+retry:
 	/* Acquire mutex */
 	ret = ffs_mutex_lock(&ffs->mutex, file->f_flags & O_NONBLOCK);
 	if (unlikely(ret < 0))
@@ -480,10 +482,32 @@ static ssize_t ffs_ep0_read(struct file *file, char __user *buf,
 			break;
 		}
 
-		if (wait_event_interruptible_exclusive_locked_irq(ffs->ev.waitq,
-							ffs->ev.count)) {
-			ret = -EINTR;
-			break;
+		if (!ffs->ev.count) {
+			DEFINE_WAIT(wait);
+
+			/*
+			 * Enqueue on the wait queue while holding the
+			 * spinlock (events are added and wake ups done
+			 * under it) so no wake up is lost, then release
+			 * both the spinlock and ffs->mutex before
+			 * sleeping: teardown paths (functionfs_unbind())
+			 * need the mutex and would otherwise deadlock
+			 * against a reader sleeping with it held.
+			 */
+			prepare_to_wait_exclusive(&ffs->ev.waitq, &wait,
+						  TASK_INTERRUPTIBLE);
+			spin_unlock_irq(&ffs->ev.waitq.lock);
+			mutex_unlock(&ffs->mutex);
+
+			if (!signal_pending(current))
+				io_schedule();
+
+			finish_wait(&ffs->ev.waitq, &wait);
+
+			if (signal_pending(current) && !ffs->ev.count)
+				return -EINTR;
+
+			goto retry;
 		}
 
 		return __ffs_ep0_read_events(ffs, buf,

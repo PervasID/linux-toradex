@@ -1590,6 +1590,8 @@ qla2x00_get_firmware_state(scsi_qla_host_t *vha, uint16_t *states)
 	ql_dbg(ql_dbg_mbx + ql_dbg_verbose, vha, 0x1054,
 	    "Entered %s.\n", __func__);
 
+	memset(&mc, 0, sizeof(mc));
+
 	mcp->mb[0] = MBC_GET_FIRMWARE_STATE;
 	mcp->out_mb = MBX_0;
 	if (IS_FWI2_CAPABLE(vha->hw))
@@ -3352,7 +3354,7 @@ qla24xx_report_id_acquisition(scsi_qla_host_t *vha,
 	struct qla_hw_data *ha = vha->hw;
 	scsi_qla_host_t *vp;
 	unsigned long   flags;
-	int found;
+	int found = 0;
 
 	ql_dbg(ql_dbg_mbx + ql_dbg_verbose, vha, 0x10b6,
 	    "Entered %s.\n", __func__);
@@ -3409,6 +3411,7 @@ qla24xx_report_id_acquisition(scsi_qla_host_t *vha,
 		list_for_each_entry(vp, &ha->vp_list, list) {
 			if (vp_idx == vp->vp_idx) {
 				found = 1;
+				atomic_inc(&vp->vref_count);
 				break;
 			}
 		}
@@ -3430,6 +3433,8 @@ qla24xx_report_id_acquisition(scsi_qla_host_t *vha,
 reg_needed:
 		set_bit(REGISTER_FC4_NEEDED, &vp->dpc_flags);
 		set_bit(REGISTER_FDMI_NEEDED, &vp->dpc_flags);
+		if (found)
+			atomic_dec(&vp->vref_count);
 		set_bit(VP_DPC_NEEDED, &vha->dpc_flags);
 		qla2xxx_wake_dpc(vha);
 	}
@@ -3487,10 +3492,10 @@ qla24xx_modify_vp_config(scsi_qla_host_t *vha)
 	if (rval != QLA_SUCCESS) {
 		ql_dbg(ql_dbg_mbx, vha, 0x10bd,
 		    "Failed to issue VP config IOCB (%x).\n", rval);
-	} else if (vpmod->comp_status != 0) {
+	} else if (vpmod->entry_status != 0) {
 		ql_dbg(ql_dbg_mbx, vha, 0x10be,
 		    "Failed to complete IOCB -- error status (%x).\n",
-		    vpmod->comp_status);
+		    vpmod->entry_status);
 		rval = QLA_FUNCTION_FAILED;
 	} else if (vpmod->comp_status != cpu_to_le16(CS_COMPLETE)) {
 		ql_dbg(ql_dbg_mbx, vha, 0x10bf,

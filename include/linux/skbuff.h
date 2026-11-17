@@ -3639,6 +3639,17 @@ static inline bool skb_is_gso(const struct sk_buff *skb)
 	return skb_shinfo(skb)->gso_size;
 }
 
+/* An skb carrying GSO state is not a legitimate IP fragment; clearing the
+ * state keeps it from leaking into the reassembled skb, whose head keeps the
+ * first fragment's shinfo and whose frag_list is not GRO-shaped.
+ */
+static inline void skb_gso_reset(struct sk_buff *skb)
+{
+	skb_shinfo(skb)->gso_size = 0;
+	skb_shinfo(skb)->gso_segs = 0;
+	skb_shinfo(skb)->gso_type = 0;
+}
+
 /* Note: Should be called only if skb_is_gso(skb) is true */
 static inline bool skb_is_gso_v6(const struct sk_buff *skb)
 {

@@ -17,6 +17,7 @@
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <net/dst.h>
+#include <net/ip.h>
 #include <net/xfrm.h>
 
 static int xfrm_output2(struct net *net, struct sock *sk, struct sk_buff *skb);
@@ -203,6 +204,14 @@ int xfrm_output(struct sock *sk, struct sk_buff *skb)
 		return xfrm_output_gso(net, sk, skb);
 
 	if (skb->ip_summed == CHECKSUM_PARTIAL) {
+		if (skb->protocol == htons(ETH_P_IP)) {
+			err = ip_check_csum_start(skb);
+			if (err) {
+				XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTERROR);
+				kfree_skb(skb);
+				return err;
+			}
+		}
 		err = skb_checksum_help(skb);
 		if (err) {
 			XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTERROR);

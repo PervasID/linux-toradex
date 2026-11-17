@@ -30,6 +30,7 @@
 #include <linux/netfilter/nfnetlink_queue.h>
 #include <linux/netfilter/nf_conntrack_common.h>
 #include <linux/list.h>
+#include <net/ip.h>
 #include <net/sock.h>
 #include <net/tcp_states.h>
 #include <net/netfilter/nf_queue.h>
@@ -351,9 +352,16 @@ nfqnl_build_packet_message(struct net *net, struct nfqnl_instance *queue,
 
 	case NFQNL_COPY_PACKET:
 		if (!(queue->flags & NFQA_CFG_F_GSO) &&
-		    entskb->ip_summed == CHECKSUM_PARTIAL &&
-		    skb_checksum_help(entskb))
-			return NULL;
+		    entskb->ip_summed == CHECKSUM_PARTIAL) {
+			if (entskb->protocol == htons(ETH_P_IP)) {
+				if (!pskb_network_may_pull(entskb,
+							   sizeof(struct iphdr)) ||
+				    ip_check_csum_start(entskb))
+					return NULL;
+			}
+			if (skb_checksum_help(entskb))
+				return NULL;
+		}
 
 		data_len = ACCESS_ONCE(queue->copy_range);
 		if (data_len > entskb->len)
@@ -905,6 +913,7 @@ nfqnl_rcv_nl_event(struct notifier_block *this,
 	if (event == NETLINK_URELEASE && n->protocol == NETLINK_NETFILTER) {
 		int i;
 
+		nfnl_lock(NFNL_SUBSYS_QUEUE);
 		/* destroy all instances for this portid */
 		spin_lock(&q->instances_lock);
 		for (i = 0; i < INSTANCE_BUCKETS; i++) {
@@ -918,6 +927,7 @@ nfqnl_rcv_nl_event(struct notifier_block *this,
 			}
 		}
 		spin_unlock(&q->instances_lock);
+		nfnl_unlock(NFNL_SUBSYS_QUEUE);
 	}
 	return NOTIFY_DONE;
 }

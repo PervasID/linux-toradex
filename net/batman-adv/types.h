@@ -22,6 +22,7 @@
 #error only "main.h" can be included directly
 #endif
 
+#include <linux/atomic.h>
 #include <linux/bitops.h>
 #include <linux/compiler.h>
 #include <linux/if_ether.h>
@@ -1201,7 +1202,7 @@ struct batadv_algo_ops {
  */
 struct batadv_dat_entry {
 	__be32 ip;
-	u8 mac_addr[ETH_ALEN];
+	atomic64_t mac_addr;
 	unsigned short vid;
 	unsigned long last_update;
 	struct hlist_node hash_entry;
