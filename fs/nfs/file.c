@@ -686,6 +686,8 @@ ssize_t nfs_file_write(struct kiocb *iocb, struct iov_iter *from)
 	if (!count)
 		goto out;
 
+	nfs_clear_invalid_mapping(file->f_mapping);
+
 	result = generic_file_write_iter(iocb, from);
 	if (result > 0)
 		written = result;

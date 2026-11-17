@@ -715,16 +715,28 @@ static int rproc_handle_resources(struct rproc *rproc, int len,
 	int ret = 0, i;
 
 	for (i = 0; i < rproc->table_ptr->num; i++) {
-		int offset = rproc->table_ptr->offset[i];
-		struct fw_rsc_hdr *hdr = (void *)rproc->table_ptr + offset;
-		int avail = len - offset - sizeof(*hdr);
-		void *rsc = (void *)hdr + sizeof(*hdr);
+		u32 offset = rproc->table_ptr->offset[i];
+		struct fw_rsc_hdr *hdr;
+		int avail, rsc_offset;
+		void *rsc;
 
-		/* make sure table isn't truncated */
-		if (avail < 0) {
+		/*
+		 * table->offset[] comes from untrusted firmware; validate it
+		 * with unsigned comparisons before deriving any pointer from
+		 * it, otherwise a negative (wrapped) int value bypasses the
+		 * truncation check and points hdr outside of the table.
+		 */
+		if (offset < sizeof(*rproc->table_ptr) ||
+		    offset >= (u32)len ||
+		    (u32)len - offset < sizeof(*hdr)) {
 			dev_err(dev, "rsc table is truncated\n");
 			return -EINVAL;
 		}
+
+		hdr = (void *)rproc->table_ptr + offset;
+		avail = len - offset - sizeof(*hdr);
+		rsc_offset = offset + sizeof(*hdr);
+		rsc = (void *)hdr + sizeof(*hdr);
 
 		dev_dbg(dev, "rsc: type %d\n", hdr->type);
 
@@ -737,7 +749,7 @@ static int rproc_handle_resources(struct rproc *rproc, int len,
 		if (!handler)
 			continue;
 
-		ret = handler(rproc, rsc, offset + sizeof(*hdr), avail);
+		ret = handler(rproc, rsc, rsc_offset, avail);
 		if (ret)
 			break;
 	}
@@ -983,6 +995,9 @@ int rproc_trigger_recovery(struct rproc *rproc)
 
 	dev_err(&rproc->dev, "recovering %s\n", rproc->name);
 
+	if (READ_ONCE(rproc->deleting))
+		return -ENODEV;
+
 	init_completion(&rproc->crash_comp);
 
 	/* clean up remote vdev entries */
@@ -992,8 +1007,13 @@ int rproc_trigger_recovery(struct rproc *rproc)
 	/* wait until there is no more rproc users */
 	wait_for_completion(&rproc->crash_comp);
 
+	/* the remote processor is being removed, do not reload it */
+	if (READ_ONCE(rproc->deleting))
+		return -ENODEV;
+
 	/* Free the copy of the resource table */
 	kfree(rproc->cached_table);
+	rproc->cached_table = NULL;
 
 	return rproc_add_virtio_devices(rproc);
 }
@@ -1012,6 +1032,11 @@ static void rproc_crash_handler_work(struct work_struct *work)
 	dev_dbg(dev, "enter %s\n", __func__);
 
 	mutex_lock(&rproc->lock);
+
+	if (READ_ONCE(rproc->deleting)) {
+		mutex_unlock(&rproc->lock);
+		return;
+	}
 
 	if (rproc->state == RPROC_CRASHED || rproc->state == RPROC_OFFLINE) {
 		/* handle only the first crash detected */
@@ -1381,6 +1406,7 @@ struct rproc *rproc_alloc(struct device *dev, const char *name,
 	INIT_LIST_HEAD(&rproc->rvdevs);
 
 	INIT_WORK(&rproc->crash_handler, rproc_crash_handler_work);
+	spin_lock_init(&rproc->crash_handler_lock);
 	init_completion(&rproc->crash_comp);
 
 	rproc->state = RPROC_OFFLINE;
@@ -1422,9 +1448,14 @@ EXPORT_SYMBOL(rproc_put);
 int rproc_del(struct rproc *rproc)
 {
 	struct rproc_vdev *rvdev, *tmp;
+	unsigned long flags;
 
 	if (!rproc)
 		return -EINVAL;
+
+	spin_lock_irqsave(&rproc->crash_handler_lock, flags);
+	WRITE_ONCE(rproc->deleting, true);
+	spin_unlock_irqrestore(&rproc->crash_handler_lock, flags);
 
 	/* if rproc is just being registered, wait */
 	wait_for_completion(&rproc->firmware_loading_complete);
@@ -1433,8 +1464,17 @@ int rproc_del(struct rproc *rproc)
 	list_for_each_entry_safe(rvdev, tmp, &rproc->rvdevs, node)
 		rproc_remove_virtio_dev(rvdev);
 
+	/*
+	 * Make sure no crash handling is queued or running anymore before
+	 * the resources are released. This is done after the virtio devices
+	 * have been removed, because a crash handler blocked on crash_comp
+	 * is only released by the shutdown performed while deleting them.
+	 */
+	cancel_work_sync(&rproc->crash_handler);
+
 	/* Free the copy of the resource table */
 	kfree(rproc->cached_table);
+	rproc->cached_table = NULL;
 
 	/* the rproc is downref'ed as soon as it's removed from the klist */
 	mutex_lock(&rproc_list_mutex);
@@ -1460,16 +1500,25 @@ EXPORT_SYMBOL(rproc_del);
  */
 void rproc_report_crash(struct rproc *rproc, enum rproc_crash_type type)
 {
+	unsigned long flags;
+
 	if (!rproc) {
 		pr_err("NULL rproc pointer\n");
+		return;
+	}
+
+	spin_lock_irqsave(&rproc->crash_handler_lock, flags);
+	if (READ_ONCE(rproc->deleting)) {
+		spin_unlock_irqrestore(&rproc->crash_handler_lock, flags);
 		return;
 	}
 
 	dev_err(&rproc->dev, "crash detected in %s: type %s\n",
 		rproc->name, rproc_crash_to_string(type));
 
-	/* create a new task to handle the error */
-	schedule_work(&rproc->crash_handler);
+	/* Have a worker handle the error; ensure system is not suspended */
+	queue_work(system_freezable_wq, &rproc->crash_handler);
+	spin_unlock_irqrestore(&rproc->crash_handler_lock, flags);
 }
 EXPORT_SYMBOL(rproc_report_crash);
 

@@ -136,7 +136,11 @@ static int ip_vs_ftp_get_addrport(char *data, char *data_limit,
 		if (c == term)
 			break;
 		if (c >= '0' && c <= '9') {
-			p[i] = p[i]*10 + c - '0';
+			unsigned int val = p[i] * 10 + c - '0';
+
+			if (val > 255)
+				return -1;
+			p[i] = val;
 		} else if (c == ',' && i < 5) {
 			i++;
 		} else {

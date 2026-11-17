@@ -1378,12 +1378,38 @@ int o2hb_init(void)
 }
 
 /* if we're already in a callback then we're already serialized by the sem */
-static void o2hb_fill_node_map_from_callback(unsigned long *map,
-					     unsigned bytes)
+static void __o2hb_fill_node_map(unsigned long *map, unsigned bytes)
 {
 	BUG_ON(bytes < (BITS_TO_LONGS(O2NM_MAX_NODES) * sizeof(unsigned long)));
 
 	memcpy(map, &o2hb_live_node_bitmap, bytes);
+}
+
+void o2hb_callback_read_lock(void)
+{
+	down_read(&o2hb_callback_sem);
+}
+
+void o2hb_callback_read_unlock(void)
+{
+	up_read(&o2hb_callback_sem);
+}
+
+void o2hb_synchronize_callbacks(void)
+{
+	down_write(&o2hb_callback_sem);
+	up_write(&o2hb_callback_sem);
+}
+
+/*
+ * Callers must already hold o2hb_callback_sem for read or write so the copy
+ * stays serialized with callback delivery.
+ */
+void o2hb_fill_node_map_locked(unsigned long *map, unsigned bytes)
+{
+	spin_lock(&o2hb_live_lock);
+	__o2hb_fill_node_map(map, bytes);
+	spin_unlock(&o2hb_live_lock);
 }
 
 /*
@@ -1393,11 +1419,9 @@ void o2hb_fill_node_map(unsigned long *map, unsigned bytes)
 {
 	/* callers want to serialize this map and callbacks so that they
 	 * can trust that they don't miss nodes coming to the party */
-	down_read(&o2hb_callback_sem);
-	spin_lock(&o2hb_live_lock);
-	o2hb_fill_node_map_from_callback(map, bytes);
-	spin_unlock(&o2hb_live_lock);
-	up_read(&o2hb_callback_sem);
+	o2hb_callback_read_lock();
+	o2hb_fill_node_map_locked(map, bytes);
+	o2hb_callback_read_unlock();
 }
 EXPORT_SYMBOL_GPL(o2hb_fill_node_map);
 
@@ -2426,7 +2450,7 @@ int o2hb_check_node_heartbeating_no_sem(u8 node_num)
 	unsigned long flags;
 
 	spin_lock_irqsave(&o2hb_live_lock, flags);
-	o2hb_fill_node_map_from_callback(testing_map, sizeof(testing_map));
+	__o2hb_fill_node_map(testing_map, sizeof(testing_map));
 	spin_unlock_irqrestore(&o2hb_live_lock, flags);
 	if (!test_bit(node_num, testing_map)) {
 		mlog(ML_HEARTBEAT,
@@ -2443,7 +2467,7 @@ int o2hb_check_node_heartbeating_from_callback(u8 node_num)
 {
 	unsigned long testing_map[BITS_TO_LONGS(O2NM_MAX_NODES)];
 
-	o2hb_fill_node_map_from_callback(testing_map, sizeof(testing_map));
+	o2hb_fill_node_map_locked(testing_map, sizeof(testing_map));
 	if (!test_bit(node_num, testing_map)) {
 		mlog(ML_HEARTBEAT,
 		     "node (%u) does not have heartbeating enabled.\n",

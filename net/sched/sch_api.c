@@ -562,8 +562,11 @@ void __qdisc_calculate_pkt_len(struct sk_buff *skb, const struct qdisc_size_tabl
 
 	pkt_len <<= stab->szopts.size_log;
 out:
-	if (unlikely(pkt_len < 1))
-		pkt_len = 1;
+	/* A size table can inflate qdisc_pkt_len() beyond any real packet
+	 * (via overhead, the data table, or size_log); cap it so deficit
+	 * schedulers such as DRR terminate their refill loops.
+	 */
+	pkt_len = clamp_t(int, pkt_len, 1, QDISC_PKT_LEN_MAX);
 	qdisc_skb_cb(skb)->pkt_len = pkt_len;
 }
 EXPORT_SYMBOL(__qdisc_calculate_pkt_len);
@@ -804,6 +807,9 @@ static int qdisc_graft(struct net_device *dev, struct Qdisc *parent,
 	if (parent == NULL) {
 		unsigned int i, num_q, ingress;
 
+		if (new)
+			new->depth = 0;
+
 		ingress = 0;
 		num_q = dev->num_tx_queues;
 		if ((q && q->flags & TCQ_F_INGRESS) ||
@@ -854,6 +860,9 @@ skip:
 	} else {
 		const struct Qdisc_class_ops *cops = parent->ops->cl_ops;
 
+		if (new && parent->depth >= 7)
+			return -E2BIG;
+
 		err = -EOPNOTSUPP;
 		if (cops && cops->graft) {
 			unsigned long cl = cops->get(parent, classid);
@@ -867,8 +876,11 @@ skip:
 			} else
 				err = -ENOENT;
 		}
-		if (!err)
+		if (!err) {
+			if (new)
+				new->depth = parent->depth + 1;
 			notify_and_destroy(net, skb, n, classid, old, new);
+		}
 	}
 	return err;
 }

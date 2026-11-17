@@ -2419,6 +2419,8 @@ static sctp_disposition_t sctp_sf_do_5_2_6_stale(struct net *net,
 
 	sctp_add_cmd_sf(commands, SCTP_CMD_REPLY, SCTP_CHUNK(reply));
 
+	sctp_add_cmd_sf(commands, SCTP_CMD_DISCARD_PACKET, SCTP_NULL());
+
 	return SCTP_DISPOSITION_CONSUME;
 
 nomem:

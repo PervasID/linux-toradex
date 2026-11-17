@@ -1885,7 +1885,9 @@ static int ipx_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 			      (const unsigned short __user *)argp);
 		break;
 	case SIOCGSTAMP:
+		release_sock(sk);
 		rc = sock_get_timestamp(sk, argp);
+		lock_sock(sk);
 		break;
 	case SIOCGIFDSTADDR:
 	case SIOCSIFDSTADDR:

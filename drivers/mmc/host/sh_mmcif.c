@@ -1504,6 +1504,7 @@ static int sh_mmcif_probe(struct platform_device *pdev)
 	host->pd = pdev;
 
 	spin_lock_init(&host->lock);
+	mutex_init(&host->thread_lock);
 
 	mmc->ops = &sh_mmcif_ops;
 	sh_mmcif_init_ocr(host);
@@ -1566,8 +1567,6 @@ static int sh_mmcif_probe(struct platform_device *pdev)
 		if (ret < 0)
 			goto err_clk;
 	}
-
-	mutex_init(&host->thread_lock);
 
 	ret = mmc_add_host(mmc);
 	if (ret < 0)

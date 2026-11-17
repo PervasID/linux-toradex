@@ -379,10 +379,9 @@ void sunrpc_destroy_cache_detail(struct cache_detail *cd)
 	list_del_init(&cd->others);
 	write_unlock(&cd->hash_lock);
 	spin_unlock(&cache_list_lock);
-	if (list_empty(&cache_list)) {
-		/* module must be being unloaded so its safe to kill the worker */
-		cancel_delayed_work_sync(&cache_cleaner);
-	}
+	cancel_delayed_work_sync(&cache_cleaner);
+	if (!list_empty(&cache_list))
+		schedule_delayed_work(&cache_cleaner, 0);
 	return;
 out:
 	printk(KERN_ERR "RPC: failed to unregister %s cache\n", cd->name);

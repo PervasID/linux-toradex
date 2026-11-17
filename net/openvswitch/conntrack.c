@@ -235,7 +235,7 @@ static int ovs_ct_set_labels(struct sk_buff *skb, struct sw_flow_key *key,
 		return 0;
 
 	cl = nf_ct_labels_find(ct);
-	if (!cl) {
+	if (!cl && !nf_ct_is_confirmed(ct)) {
 		nf_ct_labels_ext_add(ct);
 		cl = nf_ct_labels_find(ct);
 	}
@@ -429,7 +429,25 @@ static int __ovs_ct_lookup(struct net *net, struct sw_flow_key *key,
 	 * actually run the packet through conntrack twice unless it's for a
 	 * different zone.
 	 */
-	if (!skb_nfct_cached(net, skb, info)) {
+	bool cached = skb_nfct_cached(net, skb, info);
+	enum ip_conntrack_info ctinfo;
+	struct nf_conn *ct;
+
+	/* If the ct entry is not confirmed and shared with some other skb,
+	 * e.g., a cloned one, we can't just modify it with the commit as we
+	 * must not modify the extension set.  Reset.
+	 */
+	if (cached && info->commit) {
+		ct = nf_ct_get(skb, &ctinfo);
+		if (ct && !nf_ct_is_confirmed(ct) && nf_ct_shared(ct)) {
+			nf_ct_put(ct);
+			skb->nfct = NULL;
+			skb->nfctinfo = IP_CT_NEW;
+			cached = false;
+		}
+	}
+
+	if (!cached) {
 		struct nf_conn *tmpl = info->ct;
 
 		/* Associate skb with specified zone. */

@@ -61,6 +61,7 @@ nfsd_proc_setattr(struct svc_rqst *rqstp, struct nfsd_sattrargs *argp,
 {
 	struct iattr *iap = &argp->attrs;
 	struct svc_fh *fhp;
+	int		hosterr;
 	__be32 nfserr;
 
 	dprintk("nfsd: SETATTR  %s, valid=%x, size=%ld\n",
@@ -98,6 +99,12 @@ nfsd_proc_setattr(struct svc_rqst *rqstp, struct nfsd_sattrargs *argp,
 		if (nfserr)
 			goto done;
 		inode = d_inode(fhp->fh_dentry);
+
+		hosterr = fh_want_write(fhp);
+		if (hosterr) {
+			nfserr = nfserrno(hosterr);
+			goto done;
+		}
 
 		if (delta < 0)
 			delta = -delta;
